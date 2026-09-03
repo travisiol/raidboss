@@ -1,0 +1,490 @@
+@import "tailwindcss";
+
+/*
+ * HYDRA — one boss, one health bar, one pot.
+ *
+ * The whole product is a single readable event: a thing is dying, in public,
+ * and you can see exactly how much of it you killed. So the page is built
+ * like a lit stage, not a document. There is one light source, above and
+ * slightly behind the beast; everything else is the pit it stands in. Panels
+ * are slabs catching that light on their top edge — a one-pixel highlight and
+ * a long shadow underneath — which is the cheapest honest way to say "this
+ * has thickness" without pretending a flat div is a 3D object. The only real
+ * geometry on the page is the boss itself, and it is raymarched, so it gets
+ * to be the only thing with volume.
+ *
+ * Colour is assigned, never decorative. Three meanings, three hues:
+ *
+ *   VENOM   — you. Your damage, your strike, your share of the pot.
+ *   BLOOD   — the boss. Its health, and only its health. When blood drains
+ *             off the bar it does not reappear anywhere else on the page.
+ *   GOLD    — the pot. USDG that has already been collected and is waiting
+ *             for a corpse.
+ *
+ * Nothing else is allowed to be saturated. On a black stage those three read
+ * from across a room and survive Twitter's video compression, which is the
+ * actual delivery format for this thing — the site is a set, and every frame
+ * should still parse at 480p with the sound off.
+ *
+ * Type is a condensed poster face over a technical one. ANTON carries the
+ * counts that need to be legible in a clip — health, damage, pot — and IBM
+ * Plex does everything a person has to actually read. No third voice.
+ */
+:root {
+  /* Stage */
+  --abyss: #04060a;
+  --pit: #090d13;
+  --pit-raised: #10161f;
+  --slab: #151d28;
+  --slab-lit: #1c2634;
+
+  /* Ink */
+  --bone: #e9eef2;
+  --bone-soft: #97a5b2;
+  --bone-muted: #5f6c79;
+
+  /* You */
+  --venom: #aef23f;
+  --venom-bright: #d8ff92;
+  --venom-deep: #47760f;
+
+  /* The boss */
+  --blood: #ff3a5e;
+  --blood-bright: #ff8098;
+  --blood-deep: #78101f;
+
+  /* The pot */
+  --gold: #f7c04a;
+  --gold-deep: #7a5a10;
+
+  /* Status */
+  --jade: #35e0b0;
+
+  --rule: rgba(174, 196, 214, 0.11);
+  --rule-strong: rgba(174, 196, 214, 0.26);
+}
+
+@theme inline {
+  --color-abyss: var(--abyss);
+  --color-pit: var(--pit);
+  --color-pit-raised: var(--pit-raised);
+  --color-slab: var(--slab);
+  --color-slab-lit: var(--slab-lit);
+
+  --color-bone: var(--bone);
+  --color-bone-soft: var(--bone-soft);
+  --color-bone-muted: var(--bone-muted);
+
+  --color-venom: var(--venom);
+  --color-venom-bright: var(--venom-bright);
+  --color-venom-deep: var(--venom-deep);
+
+  --color-blood: var(--blood);
+  --color-blood-bright: var(--blood-bright);
+  --color-blood-deep: var(--blood-deep);
+
+  --color-gold: var(--gold);
+  --color-gold-deep: var(--gold-deep);
+  --color-jade: var(--jade);
+
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+
+  --font-display: "Anton", "Arial Narrow", ui-sans-serif, sans-serif;
+  --font-mono:
+    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans:
+    "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+html {
+  background: var(--abyss);
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--abyss);
+  color: var(--bone);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--venom);
+  color: var(--abyss);
+}
+
+:focus-visible {
+  outline: 2px solid var(--venom);
+  outline-offset: 2px;
+}
+
+/* ---- Type -------------------------------------------------------------- */
+
+/*
+ * The hero is sized against its own column rather than the viewport: the
+ * wordmark sits in a narrow rail beside the arena on desktop and goes full
+ * width when the layout stacks, and a vw clamp is wrong in one of those two
+ * places by definition.
+ */
+.pitch {
+  container-type: inline-size;
+}
+
+.type-hero {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(52px, 21cqw, 132px);
+  line-height: 0.86;
+  letter-spacing: 0.005em;
+  text-transform: uppercase;
+}
+
+.type-display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(26px, 3.4vw, 44px);
+  line-height: 1;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+
+.type-title {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(17px, 1.7vw, 22px);
+  line-height: 1.1;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* Counts that have to survive a compressed video. */
+.type-count {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(30px, 4.4vw, 58px);
+  line-height: 0.9;
+  letter-spacing: 0.005em;
+  font-variant-numeric: tabular-nums;
+}
+
+.type-figure {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 22px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.type-figure-sm {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.type-label {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 10px;
+  line-height: 1.1;
+  letter-spacing: 0.19em;
+  text-transform: uppercase;
+}
+
+.type-data {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+.type-body {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+/* ---- Slabs ------------------------------------------------------------- */
+
+/*
+ * A panel is a slab lying in the pit: lit along its top edge, dark
+ * underneath, sitting on its own shadow. Two shadows do the work — a tight
+ * one for contact and a wide one for the drop — and the inset highlight is
+ * what actually sells the thickness.
+ */
+.slab {
+  position: relative;
+  background: linear-gradient(
+    to bottom,
+    var(--slab-lit) 0%,
+    var(--slab) 38%,
+    var(--pit-raised) 100%
+  );
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  box-shadow:
+    inset 0 1px 0 rgba(233, 238, 242, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.7),
+    0 18px 40px -22px rgba(0, 0, 0, 0.95);
+}
+
+.slab-flat {
+  background: var(--pit);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 rgba(233, 238, 242, 0.04);
+}
+
+/* The stage floor: one light above the beast, falling off into the pit. */
+.stage {
+  background:
+    radial-gradient(
+      120% 90% at 50% 8%,
+      rgba(84, 118, 148, 0.16) 0%,
+      rgba(10, 15, 22, 0.5) 42%,
+      var(--abyss) 78%
+    ),
+    var(--abyss);
+}
+
+.vignette::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    100% 75% at 50% 45%,
+    transparent 40%,
+    rgba(4, 6, 10, 0.72) 100%
+  );
+}
+
+/* Grain, kept off small text — it lives on the stage only. */
+.grain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: radial-gradient(
+    rgba(174, 196, 214, 0.16) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 4px 4px;
+}
+
+.scanlines::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(174, 196, 214, 0.035) 0px,
+    rgba(174, 196, 214, 0.035) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* ---- Glow -------------------------------------------------------------- */
+
+.glow-venom {
+  text-shadow:
+    0 0 12px rgba(174, 242, 63, 0.55),
+    0 0 40px rgba(174, 242, 63, 0.22);
+}
+
+.glow-blood {
+  text-shadow:
+    0 0 12px rgba(255, 58, 94, 0.5),
+    0 0 44px rgba(255, 58, 94, 0.2);
+}
+
+.glow-gold {
+  text-shadow:
+    0 0 12px rgba(247, 192, 74, 0.5),
+    0 0 40px rgba(247, 192, 74, 0.18);
+}
+
+/* ---- Health bar -------------------------------------------------------- */
+
+/*
+ * Three layers, and the middle one is the point. The fill is where the boss
+ * is now; the chip layer is where it was half a second ago and eases down
+ * behind it, so a hit reads as a visible bite taken out of the bar rather
+ * than a number changing. Fighting games have used this for thirty years
+ * because it works at a glance and it works on video.
+ */
+.hp-track {
+  position: relative;
+  overflow: hidden;
+  background: #0b0f15;
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 1px rgba(174, 196, 214, 0.09);
+}
+
+.hp-chip {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(to bottom, #ffd4b0, #f5a15c 45%, #b4611f);
+  transition: width 620ms cubic-bezier(0.22, 1, 0.36, 1) 140ms;
+}
+
+.hp-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(
+    to bottom,
+    var(--blood-bright) 0%,
+    var(--blood) 42%,
+    var(--blood-deep) 100%
+  );
+  box-shadow:
+    0 0 24px rgba(255, 58, 94, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transition: width 190ms cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+/* The leading edge of the fill, so the eye can find "now" on a long bar. */
+.hp-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 14px 3px rgba(255, 255, 255, 0.7);
+  transition: left 190ms cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.hp-hatch {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    115deg,
+    rgba(0, 0, 0, 0.22) 0px,
+    rgba(0, 0, 0, 0.22) 2px,
+    transparent 2px,
+    transparent 9px
+  );
+}
+
+/* ---- Motion ------------------------------------------------------------ */
+
+@keyframes shake {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  15% { transform: translate3d(-7px, 3px, 0); }
+  30% { transform: translate3d(6px, -4px, 0); }
+  45% { transform: translate3d(-5px, -2px, 0); }
+  60% { transform: translate3d(4px, 3px, 0); }
+  80% { transform: translate3d(-2px, 1px, 0); }
+}
+
+.shake {
+  animation: shake 380ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes shake-hard {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  10% { transform: translate3d(-16px, 8px, 0) rotate(-0.5deg); }
+  25% { transform: translate3d(14px, -10px, 0) rotate(0.4deg); }
+  40% { transform: translate3d(-12px, -6px, 0) rotate(-0.3deg); }
+  55% { transform: translate3d(10px, 8px, 0) rotate(0.3deg); }
+  70% { transform: translate3d(-7px, 4px, 0); }
+  85% { transform: translate3d(4px, -3px, 0); }
+}
+
+.shake-hard {
+  animation: shake-hard 900ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes pulse-ring {
+  from { transform: scale(0.7); opacity: 0.85; }
+  to { transform: scale(2.4); opacity: 0; }
+}
+
+.pulse-ring {
+  animation: pulse-ring 900ms ease-out forwards;
+}
+
+@keyframes ticker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.animate-ticker {
+  animation: ticker 38s linear infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.breathe {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes rise {
+  from { transform: translateY(14px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.rise {
+  animation: rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/*
+ * Everything above is decoration on top of a page that already reads without
+ * it, so reduced-motion switches all of it off rather than substituting a
+ * gentler version. The boss canvas checks the same query in JS and holds a
+ * still frame.
+ */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .shake,
+  .shake-hard,
+  .pulse-ring,
+  .animate-ticker,
+  .breathe,
+  .rise {
+    animation: none;
+  }
+
+  .hp-chip,
+  .hp-fill,
+  .hp-edge {
+    transition-duration: 1ms;
+  }
+}
+
+/* Scrollbars inside the feed panels, so they read as part of the instrument. */
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-strong) transparent;
+}
+
+.thin-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--rule-strong);
+  border-radius: 3px;
+}
+
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
