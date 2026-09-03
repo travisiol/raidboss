@@ -31,7 +31,7 @@ const ITEMS = [
   },
   {
     q: "Where does the fee actually go?",
-    a: `Every strike routes ${raidRules.feeBps / 100}% of the buy into the boss's pot as USDG. The buy and the hit are a single call, so there is no path that takes the token price without paying the fee and no path that damages the boss without buying.`,
+    a: `${raidRules.feeBps / 100}% of every buy is set aside as the boss's pot, in USDG, and paid out when it dies. How that is enforced depends on what is deployed: with a raid contract the buy and the hit are one call, so there is no path that takes the price without paying the fee. Without one, the fee is collected from the token's own take and distributed against the published split — which is why that split is on this page as a table anyone can check, rather than a number you have to take on faith.`,
   },
   {
     q: "Why is each boss bigger?",
@@ -39,7 +39,7 @@ const ITEMS = [
   },
   {
     q: "Is the boss on screen real?",
-    a: "The health bar, the pot, the damage board and the log are all one state. When a contract address is configured they are read from the chain in a single call per block, so they cannot disagree with each other. Until then the page runs the same rules locally and says SIMULATION in the nav, in the arena and on the strike button.",
+    a: "The health bar, the pot, the damage board and the log are one state, derived from one set of rules, so they cannot disagree with each other. Where that state comes from is stated on the page at all times: LIVE means it is read off the chain — either from a raid contract, or by watching buys arrive at the pool and replaying them — and SIMULATION means nothing is deployed yet and the rules are running locally. The tag is in the nav, in the arena and on the strike button, and it changes on its own when the addresses are configured.",
   },
 ];
 

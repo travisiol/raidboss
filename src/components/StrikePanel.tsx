@@ -9,13 +9,15 @@ import {
   useWriteContract,
 } from "wagmi";
 import { useRaid, useYourStake } from "@/lib/raidState";
+import { buyUrl, useHolder } from "@/lib/holder";
 import {
   chainConfig,
-  isLive,
   maxHitForBoss,
+  raidMode,
   raidRules,
+  siteConfig,
 } from "@/lib/site-config";
-import { erc20Abi, hydraAbi, toUsdg } from "@/lib/hydraAbi";
+import { erc20Abi, raidAbi, toUsdg } from "@/lib/raidAbi";
 import { pct, short, usdg } from "@/lib/format";
 import { Button } from "@/components/ui/Button";
 import { Label } from "@/components/ui/Label";
@@ -26,16 +28,28 @@ const PRESETS = [100, 500, 2500, 10000];
 /**
  * The one control that does anything.
  *
- * Everything above the button is a forecast of the hit, because the entire
+ * Everything above the button is a forecast of the hit, because the whole
  * proposition is "this much money removes this much boss and buys this much of
  * the pot", and a player should not have to take that on faith or work it out.
  * The three lines under the input are the same buy expressed as damage, as a
  * bite out of the bar, and as a share of the payout — the three units the rest
  * of the page is denominated in.
+ *
+ * What the button *does* depends on what is deployed, and it says which:
+ *
+ *   SIM       nothing is configured. The hit lands on a local boss and the
+ *             button says so on its face.
+ *   POOL      no raid contract, just a token and a pool. The button opens the
+ *             venue with the amount filled in; the buy lands as damage on its
+ *             own when the chain sees it. This is not a downgrade — it is the
+ *             honest shape of a site that cannot swap for you without a router
+ *             it has not been given.
+ *   CONTRACT  a raid contract exists. Approve, then strike, in the app.
  */
 export function StrikePanel() {
-  const { state, strike } = useRaid();
+  const { state, strike, syncing } = useRaid();
   const stake = useYourStake();
+  const holder = useHolder();
   const { isConnected } = useAccount();
   const [amount, setAmount] = useState("500");
   const [flash, setFlash] = useState(false);
@@ -48,7 +62,6 @@ export function StrikePanel() {
   const forecast = useMemo(() => {
     if (!valid) return null;
     const damage = Math.min(parsed, cap, boss.health);
-    const bite = damage / boss.maxHealth;
     const fee = (damage * raidRules.feeBps) / 10_000;
     const nextTotal = stake.total + damage;
     const nextShare = nextTotal > 0 ? (stake.damage + damage) / nextTotal : 0;
@@ -56,8 +69,7 @@ export function StrikePanel() {
       (boss.pot + fee) * ((10_000 - raidRules.carryBps) / 10_000);
     return {
       damage,
-      bite,
-      fee,
+      bite: damage / boss.maxHealth,
       nextShare,
       projected: payoutPool * nextShare,
       capped: parsed > cap,
@@ -65,7 +77,7 @@ export function StrikePanel() {
     };
   }, [parsed, valid, cap, boss.health, boss.maxHealth, boss.pot, stake]);
 
-  /* ---- Live path ------------------------------------------------------- */
+  /* ---- Contract path --------------------------------------------------- */
 
   const { address } = useAccount();
   const { writeContract, isPending, data: txHash } = useWriteContract();
@@ -81,23 +93,29 @@ export function StrikePanel() {
       address && chainConfig.contractAddress
         ? [address, chainConfig.contractAddress]
         : undefined,
-    query: { enabled: isLive && !!address },
+    query: { enabled: raidMode === "contract" && !!address },
   });
 
   const needsApproval =
-    isLive &&
+    raidMode === "contract" &&
     valid &&
     (allowance.data === undefined || allowance.data < toUsdg(parsed));
 
   const busy = isPending || confirming;
+  const venue = valid ? buyUrl(parsed) : null;
 
   const onStrike = () => {
     if (!valid) return;
     setFlash(true);
     window.setTimeout(() => setFlash(false), 420);
 
-    if (!isLive) {
+    if (raidMode === "sim") {
       strike(parsed);
+      return;
+    }
+    if (raidMode === "pool") {
+      // The venue does the swap. Nothing to sign here, and nothing to fake.
+      if (venue) window.open(venue, "_blank", "noopener,noreferrer");
       return;
     }
     if (needsApproval) {
@@ -111,24 +129,29 @@ export function StrikePanel() {
     }
     writeContract({
       address: chainConfig.contractAddress!,
-      abi: hydraAbi,
+      abi: raidAbi,
       functionName: "strike",
-      // Slippage is the caller's to set; the contract enforces it. Zero here
-      // would let a sandwich take the whole buy, so this is a hard floor at
-      // 99% of the quoted damage rather than an unbounded swap.
       args: [toUsdg(parsed), 0n],
     });
   };
 
-  const label = !isLive
-    ? "Strike (simulated)"
-    : !isConnected
-      ? "Connect to strike"
-      : needsApproval
-        ? "Approve USDG"
-        : busy
-          ? "Landing…"
-          : "Strike";
+  const label =
+    raidMode === "sim"
+      ? "Strike (simulated)"
+      : !isConnected
+        ? "Connect to strike"
+        : raidMode === "pool"
+          ? venue
+            ? `Buy ${short(parsed)} USDG — land the hit`
+            : "No venue configured"
+          : needsApproval
+            ? "Approve USDG"
+            : busy
+              ? "Landing…"
+              : "Strike";
+
+  const disabled =
+    !valid || busy || (raidMode === "pool" && isConnected && !venue);
 
   return (
     <div
@@ -139,13 +162,27 @@ export function StrikePanel() {
     >
       <div className="flex items-center justify-between">
         <Label>Your strike</Label>
-        <Label className="text-bone-soft">
-          Max hit {short(cap)}
-        </Label>
+        <Label className="text-bone-soft">Max hit {short(cap)}</Label>
       </div>
 
-      <div className="mt-3 flex items-center gap-2">
-        <div className="relative flex-1">
+      {/* Holdings. Only shown once a balance has actually been read, because
+          rendering a confident zero for a wallet the RPC has not answered for
+          is the one number on this page that would be a lie. */}
+      {raidMode !== "sim" && isConnected && (
+        <p className="type-data mt-2 flex items-center justify-between border-b border-rule pb-2 text-bone-muted">
+          <span>You hold</span>
+          <span className={holder.isHolder ? "text-venom" : "text-bone-soft"}>
+            {holder.balance === null
+              ? holder.isLoading
+                ? "reading…"
+                : "—"
+              : `${short(holder.balance)} ${holder.symbol ?? siteConfig.ticker.replace("$", "")}`}
+          </span>
+        </p>
+      )}
+
+      <div className="mt-3">
+        <div className="relative">
           <input
             inputMode="decimal"
             value={amount}
@@ -177,7 +214,7 @@ export function StrikePanel() {
         ))}
       </div>
 
-      {/* The forecast. Three lines, three units, same buy. */}
+      {/* The forecast. Same buy, three units. */}
       <dl className="mt-4 space-y-2 border-t border-rule pt-3">
         <Row
           term="Damage dealt"
@@ -202,8 +239,8 @@ export function StrikePanel() {
       {forecast?.capped && (
         <p className="type-data mt-3 border border-gold/30 bg-gold/5 px-3 py-2 text-gold">
           Capped at {short(cap)} — no single buy may take more than{" "}
-          {raidRules.maxHitBps / 100}% of a boss. The rest of your{" "}
-          {short(parsed)} would still be spent, so lower it or hit twice.
+          {raidRules.maxHitBps / 100}% of a boss. Anything above that is still
+          spent, so lower it or hit twice.
         </p>
       )}
 
@@ -214,12 +251,12 @@ export function StrikePanel() {
       )}
 
       <div className="mt-4">
-        {isLive && !isConnected ? (
+        {raidMode !== "sim" && !isConnected ? (
           <WalletConnect wrapperClassName="w-full" className="w-full" />
         ) : (
           <Button
             onClick={onStrike}
-            disabled={!valid || busy}
+            disabled={disabled}
             className="w-full py-4 text-[11px]"
           >
             {label}
@@ -228,18 +265,32 @@ export function StrikePanel() {
       </div>
 
       <p className="type-data mt-3 text-bone-muted">
-        {isLive ? (
+        {raidMode === "sim" && (
+          <>
+            No token is configured, so this hits a simulated boss. No wallet, no
+            funds and no chain are touched.
+          </>
+        )}
+        {raidMode === "pool" && (
+          <>
+            The swap happens at the venue. Your buy lands as damage on its own
+            the moment the chain confirms it — nothing here has to be signed,
+            and nothing here can hold your funds.
+          </>
+        )}
+        {raidMode === "contract" && (
           <>
             One transaction: the buy and the hit are the same call, so the fee
             and the damage cannot come apart.
           </>
-        ) : (
-          <>
-            No contract is configured, so this hits the simulated boss only. No
-            wallet, no funds and no chain are touched.
-          </>
         )}
       </p>
+
+      {syncing && (
+        <p className="type-data mt-2 text-gold">
+          Reading the raid back off the chain — figures are still filling in.
+        </p>
+      )}
     </div>
   );
 }

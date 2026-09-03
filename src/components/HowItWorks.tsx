@@ -23,7 +23,7 @@ const STEPS = [
   {
     index: "02",
     title: "Every buy is a hit",
-    body: `Buying ${siteConfig.ticker} takes health off the boss, one point per USDG. The same transaction pays ${raidRules.feeBps / 100}% into the pot, so the thing you are fighting for grows on the same swing that damages it.`,
+    body: `Buying ${siteConfig.ticker} takes health off the boss, one point per USDG. ${raidRules.feeBps / 100}% of that buy goes to the pot, so the thing you are fighting for grows on the same swing that damages it.`,
     art: <Hit />,
   },
   {
@@ -35,7 +35,7 @@ const STEPS = [
   {
     index: "04",
     title: "A bigger one takes its place",
-    body: `The next boss has ${raidRules.growth}× the health, one more head, and a pot that scales with it. Nothing resets — the ladder only goes up.`,
+    body: `The next boss has ${raidRules.growth}× the health, another pair of horns, and a pot that scales with it. Nothing resets — the ladder only goes up.`,
     art: <Escalate />,
   },
 ];

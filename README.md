@@ -1,12 +1,12 @@
-# HYDRA
+# RAIDBOSS
 
 One boss, one health bar, one pot. Every buy is a hit; when the bar hits zero
 the pot is split between everyone who hit it, and a bigger boss takes its
 place.
 
-`HYDRA` is three strings in `src/lib/site-config.ts` — `name` for the all-caps
-lockup, `wordmark` for the title-case form, `ticker` for `$HYDRA` — plus the
-`NEXT_PUBLIC_HYDRA_*` env prefix. Nothing else spells the name out.
+`RAIDBOSS` is three strings in `src/lib/site-config.ts` — `name`, `wordmark`,
+`ticker` — plus the `NEXT_PUBLIC_RAID_*` env prefix. Nothing else spells the
+name out.
 
 ## Stack
 
@@ -17,22 +17,21 @@ no 3D library.
 ## The rules
 
 Damage is denominated in the same unit as the buy: **one USDG spent is one
-point of damage**. That single equivalence is what makes the whole page
-readable — a bar of 250,000 is a boss that dies after 250,000 USDG of buying,
-and the pot on the table is always the fee share of that.
+point of damage**. That single equivalence is what makes the page readable — a
+bar of 250,000 is a boss that dies after 250,000 USDG of buying, and the pot on
+the table is always the fee share of that.
 
 | | | |
 | --- | --- | --- |
-| Fee into the pot | 3% | of every buy, collected as USDG |
+| Fee into the pot | 3% | of every buy, in USDG |
 | Boss I | 250,000 | health |
-| Each boss after | 1.75× | the one before, plus one head |
+| Each boss after | 1.75× | the one before, with a heavier crown |
 | Biggest single hit | 8% | of a boss's health |
 | Carried forward | 10% | of a dead pot seeds the next one |
 
-All five live in `raidRules` and are env-overridable. **They must match what
-the deployed contract enforces** — the site derives every forecast, every
-label and the simulation itself from them, so a mismatch shows up as the page
-quoting damage the chain will not deal.
+All five live in `raidRules` and are env-overridable. **They must match
+whatever actually enforces them** — the site derives every forecast, every
+label and the simulation itself from them.
 
 **Why the hit cap exists.** It is a game rule, not a safety rail. Without it a
 single wallet ends a boss on its own and there is no raid to watch, no board to
@@ -40,13 +39,46 @@ climb and no reason for anyone else to swing. At 8% a boss needs at least
 thirteen hits to fall.
 
 **Why there is no killing-blow bonus.** Pure pro-rata means there is nothing to
-snipe and no reason to stop hitting early. A wallet that opened the fight and
-one that closed it are paid by the same rule.
+snipe and no reason to stop hitting early.
 
-## The boss is the product
+## Three ways to run it
 
-`src/components/BossCanvas.tsx` is a raymarched signed-distance field in a
-single WebGL fragment shader. No three.js, no model files, ~200 lines of GLSL.
+One rules engine, three sources. The mode is picked from what is configured,
+and the page states which one it is in at all times.
+
+| Mode | Needs | What the strike button does |
+| --- | --- | --- |
+| `sim` | nothing | Hits a local boss. Labelled SIMULATION everywhere. |
+| `pool` | token + pool + quote token | Opens the venue with the amount filled in. The buy lands as damage on its own when the chain confirms it. |
+| `contract` | a raid contract | Approve, then strike, in the app. |
+
+**`pool` is the mode to launch in.** It needs nothing deployed but the token
+and its pool: `src/lib/poolRaid.ts` watches USDG transfers into the pool,
+treats each as a buy, and replays them through the same `applyHit` the
+simulation uses. The health bar, the pot, the board and the graveyard are all
+derived from that one fold, so none of them can drift from each other or from
+the rules as written.
+
+Its one honest caveat, stated on the page: liquidity adds look like buys on
+chain and get counted with them. Removing that ambiguity is most of the
+argument for eventually deploying `src/lib/raidAbi.ts`.
+
+## Payouts
+
+`/#payouts` is the bill. For every dead boss it writes out address, damage,
+share and USDG owed, sorted by what is owed, exportable as CSV or JSON.
+
+It exists because until a contract pays winners out on its own, a person does
+— and a person needs a list of addresses and amounts, not a leaderboard. It is
+public on purpose: the split is derived from damage that is already on chain,
+so publishing the table is the difference between "trust me, I paid people" and
+a receipt anyone can audit against the transfers that follow it.
+
+## The dragon
+
+`src/lib/dragonShader.ts` is a raymarched signed-distance field in a single
+WebGL fragment shader. No three.js, no model files: eighteen tapered capsules,
+seven ellipsoids and three thin triangles for the wing membranes.
 
 **Why a shader and not a sprite.** A health bar is an abstraction, and the
 thing it describes has to be present enough that draining it feels like damage
@@ -54,21 +86,62 @@ rather than like a progress indicator. The two things a sprite cannot do are
 the two that matter: carry a continuous, non-quantised state, and react on the
 same frame a hit lands.
 
-**How the heads work.** The model is a core mass with N necks folded into N
-angular sectors, so the marcher evaluates one neck no matter how many heads the
-boss has — a nine-headed boss costs the same as a three-headed one. Health is
-read off the body directly: `uHp * uHeads` is the fractional number of living
-heads, so the outermost head withers and slumps as the bar drains.
+Health is legible off the body three ways over — the head sinks and the wings
+fold as the bar drains, the seams run from dull ember to white-hot, and the
+membranes tatter. On a muted autoplaying clip the bar may be off-screen and the
+silhouette still says how far along the kill is. A hit throws the jaw open and
+a ring across the floor.
 
-That makes the creature a second, redundant copy of the health bar, and the
-vein colour — teal at full health, arterial as it dies — a third. The
-redundancy is deliberate: on a muted autoplaying clip the bar may be off-screen
-and the silhouette still says how far along the kill is.
+### What it cost to get there
 
-**Performance.** The shader measures its own frame time once a second and drops
-render scale if it is missing 60fps. `prefers-reduced-motion` holds a still
-frame. No WebGL at all falls back to a glow, and the page keeps its bar, its
-pot and its board.
+Worth writing down, because every one of these cost an hour:
+
+- **The compiler is the binding constraint, not the GPU.** A first draft with
+  loops and nested branches in the distance function linked fine and then never
+  returned from its first `drawArrays` — ANGLE hands the translated HLSL to fxc,
+  and fxc sits for minutes on a function inlined into eight call sites. Hand-
+  unrolled, hoisted and cut to five call sites, it compiles in 13ms.
+- **A bounding sphere is a surface unless you keep away from it.** Its distance
+  falls to zero at its own shell, so returning that number to the marcher makes
+  the invisible bound behave exactly like geometry. `BOUND_MARGIN` enters the
+  detail branch early enough that the marcher never sees a value near its hit
+  epsilon.
+- **Uniforms belong to the program, not the context.** A `resize()` that
+  early-returned when the canvas size was unchanged skipped the resolution
+  upload on remount, leaving `uRes` at (0, 0) — every pixel divided by zero and
+  the canvas rendered black.
+- **`gl.finish()` does not block under ANGLE.** Timing a draw with it reports
+  0.0ms and infinite frames per second. `readPixels` has to produce a value, so
+  it cannot return early.
+- **A paused rAF is not a slow GPU.** The adaptive resolution controller read
+  the long measurement window of a backgrounded tab as two frames per second
+  and collapsed the render to 165 pixels wide — permanently, until reload. It
+  now measures the *median interval between frames* and throws away any gap
+  over 200ms, which is the only signal that distinguishes a slow GPU (long but
+  regular gaps) from a throttled one (a handful of enormous ones).
+- **fxc has a cliff, and it is not where you expect.** Adding fangs, a socketed
+  eye and curved horns took link time from 13ms to two seconds. The model was
+  worth keeping, so the link is polled through `KHR_parallel_shader_compile`
+  instead of blocking the main thread on `LINK_STATUS`.
+- **`min-width: auto` on a grid item.** A poster-sized figure in a narrow
+  column does not wrap or shrink — it prints on top of its neighbour. Every
+  figure on this page is a display face at a viewport-relative size, so every
+  one of them needed `min-w-0`.
+
+Measured after all that: **70ns per pixel on an Intel UHD** — about 10ms for a
+480×315 frame. Resolution is tuned from measured frame time in both directions,
+targeting 30fps, because a boss standing in place breathing does not need 60
+and the difference buys four times the pixels.
+
+### `/lab`
+
+A bench for the shader: renders exactly one frame per click, times a burst, and
+prints ns/pixel, with sliders for health, tier, hit and death. Rendering one
+frame rather than a loop is the point — an animating canvas never lets the page
+go idle, and a page that never goes idle cannot be screenshotted or profiled.
+
+Excluded from `robots.txt`. Delete the route before launch if you would rather
+not ship it.
 
 ## The health bar
 
@@ -76,54 +149,25 @@ Three layers, and the middle one is the point. `hp-fill` is the truth and moves
 in 190ms. `hp-chip` is the same number on a slower, delayed transition, so for
 about three quarters of a second after a hit there is a pale wedge showing
 exactly how much was just taken off — the bite, not the result. `hp-edge` is a
-two-pixel highlight riding the front so the eye can find *now* on a bar that is
-a metre wide on a projector and forty pixels on a phone.
+two-pixel highlight riding the front so the eye can find *now*.
 
 Fighting games have used this for thirty years because it works at a glance and
 it works on video.
 
-## Simulation vs. chain
+## Simulation
 
-With `NEXT_PUBLIC_HYDRA_CONTRACT_ADDRESS` unset the site runs the same rules
-locally and labels itself **SIMULATION** in the nav, in the arena and on the
-strike button. Nothing touches a wallet, a chain or a balance, and every write
-control is disabled.
+With nothing configured the site runs the same rules locally and says
+SIMULATION in the nav, in the arena and on the strike button. This is not a
+mock for development convenience — a health bar that never moves communicates
+nothing about a product whose entire idea is a health bar that moves.
 
-This is not a mock for development convenience — a health bar that never moves
-communicates nothing about a product whose entire idea is a health bar that
-moves. `src/lib/sim.ts` models the shape of real traffic: log-normal buy sizes
-with a long right tail, one buy in twenty a whale, arrivals in bursts, and the
-whole thing speeding up as a boss nears death.
-
-The starting arena is seeded deterministically (`seedRaid`, mulberry32) at
-module load so the server and the client render byte-identical first frames.
-Timestamps are relative to mount and negative, which is what keeps `ago()`
-deterministic during SSR — nothing in the seed calls `Date.now()`.
-
-Set all three addresses plus `NEXT_PUBLIC_HYDRA_LIVE=true` and the same
-components read `currentBoss`, `leaderboard` and `Hit` logs instead. The tag
-flips to LIVE on its own.
-
-## The contract surface
-
-`src/lib/hydraAbi.ts` is what the site expects, and it is speced around the
-page rather than the other way round. `currentBoss` returns the whole arena in
-one struct, one call, one block — reading the bar, the pot and the hit count
-from separate views lets them disagree, and the page would show a state that
-never existed on chain.
-
-`strike(amountUsdg, minTokensOut)` does the buy and the hit in one call, so
-there is no path that takes the token price without paying the fee and none
-that damages the boss without buying.
-
-`leaderboard(count)` is the one concession to gas: a contract cannot cheaply
-sort, so it is expected to keep a bounded top-N window rather than an unbounded
-sorted set.
+`src/lib/sim.ts` models the shape of real traffic: log-normal buy sizes with a
+long right tail, one buy in twenty a whale, arrivals in bursts, and the whole
+thing speeding up as a boss nears death. The starting arena is seeded
+deterministically so the server and the client render byte-identical first
+frames; nothing in the seed calls `Date.now()`.
 
 ## Colour is assigned, never decorative
-
-Three meanings, three hues, and nothing else on the page is allowed to be
-saturated:
 
 - **VENOM** — you. Your damage, your strike, your share.
 - **BLOOD** — the boss. Its health, and only its health.
@@ -138,16 +182,17 @@ compression, which is the actual delivery format for this thing.
 npm run dev
 ```
 
-Copy `.env.example` to `.env.local` before pointing it at anything real.
+Copy `.env.example` to `.env.local` before pointing it at anything real. That
+file documents each mode and what it needs.
 
 ## Open decisions
 
-- **The 10% carry.** It means a fresh boss always has something on it, at the
-  cost of every payout being 90% of what was collected. Set
-  `NEXT_PUBLIC_HYDRA_CARRY_BPS=0` for pure payout.
+- **The name.** RAIDBOSS is a many-headed dragon and the model is a single-headed
+  one. Three strings in `src/lib/site-config.ts` if you want it to match.
+- **The 10% carry.** A fresh boss always has something on it, at the cost of
+  every payout being 90% of what was collected. `NEXT_PUBLIC_RAID_CARRY_BPS=0`
+  for pure payout.
 - **1.75× growth.** Ten bosses in, health is three orders of magnitude up.
-  That is the drama and also the ceiling — it is worth deciding whether the
-  ladder caps somewhere.
-- **The chain values in `src/lib/chain.ts`** came from third-party sources and
-  must be re-verified against the official docs before this points at real
-  funds.
+  That is the drama and also the ceiling — worth deciding whether it caps.
+- **`src/lib/chain.ts`** came from third-party sources and must be re-verified
+  against the official docs before this points at real funds.

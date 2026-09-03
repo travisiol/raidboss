@@ -10,6 +10,7 @@ import { pct } from "@/lib/format";
 const LINKS = [
   { href: "#rules", label: "Rules" },
   { href: "#ladder", label: "Ladder" },
+  { href: "#payouts", label: "Payouts" },
   { href: "#faq", label: "FAQ" },
 ];
 

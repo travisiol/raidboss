@@ -20,7 +20,7 @@
  * If the deployed contract names these differently, this file is the only
  * place to change.
  */
-export const hydraAbi = [
+export const raidAbi = [
   {
     type: "function",
     name: "currentBoss",
@@ -67,7 +67,7 @@ export const hydraAbi = [
   },
   {
     /**
-     * Buy `$HYDRA` with `amountUsdg` and land the hit. `minTokensOut` is the
+     * Buy `$RAID` with `amountUsdg` and land the hit. `minTokensOut` is the
      * caller's slippage bound — the swap and the damage are the same
      * transaction on purpose, so there is no way to take the price without
      * taking the fee, and no way to damage the boss without buying.
@@ -119,8 +119,23 @@ export const hydraAbi = [
   },
 ] as const;
 
-/** Minimal ERC-20 surface: the USDG allowance dance in front of `strike`. */
+/** Minimal ERC-20 surface: balances for the holder panel, allowance for
+ *  the contract path, and the two metadata calls the UI labels with. */
 export const erc20Abi = [
+  {
+    type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "symbol",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "string" }],
+  },
   {
     type: "function",
     name: "balanceOf",

@@ -55,7 +55,7 @@ export function Rolling({
   }, [format]);
 
   // The server renders the exact starting value, so there is nothing to
-  // reconcile on hydration; the loop takes over on the first client frame.
+  // reconcile on raidbosstion; the loop takes over on the first client frame.
   return (
     <span ref={ref} className={className}>
       {initial}
@@ -77,16 +77,26 @@ export function Stat({
   className?: string;
   align?: "left" | "right";
 }) {
+  /*
+   * `min-w-0` is load-bearing. A grid item defaults to `min-width: auto`,
+   * which means it refuses to shrink below its content — so a poster-sized
+   * figure in a narrow column does not wrap or scale, it silently overflows
+   * into the neighbouring cell and prints on top of its label. Every figure
+   * on this page is set in a display face at a viewport-relative size, so
+   * every one of them is a candidate for that.
+   */
   return (
     <div
       className={clsx(
-        "flex flex-col gap-1",
+        "flex min-w-0 flex-col gap-1",
         align === "right" && "items-end text-right",
         className,
       )}
     >
       <span className="type-label text-bone-muted">{label}</span>
-      <span className="flex items-baseline gap-1.5">{children}</span>
+      <span className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap">
+        {children}
+      </span>
       {hint && <span className="type-data text-bone-muted">{hint}</span>}
     </div>
   );

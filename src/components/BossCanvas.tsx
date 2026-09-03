@@ -2,232 +2,54 @@
 
 import { memo, useEffect, useRef, useState, type RefObject } from "react";
 import type { Visuals } from "@/lib/raidState";
+import { DRAGON_FRAG, DRAGON_VERT } from "@/lib/dragonShader";
 
 /**
- * The boss, raymarched.
+ * The dragon, raymarched.
  *
  * This is the only object on the page with real volume, and that is the whole
  * argument for spending a shader on it: a health bar is an abstraction, and
- * the thing the bar describes has to be present enough that draining it feels
- * like damage rather than like a progress indicator. A sprite could not do the
- * two things that matter — carry a continuous, non-quantised state, and react
- * on the same frame a hit lands.
+ * the thing it describes has to be present enough that draining it feels like
+ * damage rather than like a progress indicator. The two things a sprite cannot
+ * do are the two that matter — carry a continuous, non-quantised state, and
+ * react on the same frame a hit lands.
  *
- * The model is a core mass with N necks folded into N angular sectors, so the
- * marcher evaluates one neck no matter how many heads the boss has and a boss
- * with nine heads costs the same as one with three. Health is read off the
- * body directly: `uHp * uHeads` is the fractional number of living heads, so
- * the outermost head withers and slumps as the bar drains and the creature is
- * a second, redundant copy of the health bar. That redundancy is deliberate —
- * on a muted autoplaying video the bar may be off-screen, and the silhouette
- * still says how far along the kill is.
+ * It is a signed-distance field: a charred, armour-plated body with molten
+ * rock in the seams, a horned skull with a hinged jaw, and membrane wings
+ * built as thin triangles stretched between finger bones. No model file, no
+ * 3D library.
  *
- * Colour carries the same signal a third time: the veins run teal at full
- * health and shift to arterial red as it dies.
+ * Health is legible off the body itself, three ways over:
+ *
+ *   POSTURE  the head sinks, the wings sag and fold as the bar drains
+ *   HEAT     the seams run dull ember at full health and white-hot at death
+ *   WINGS    the membranes tatter, holes opening as it weakens
+ *
+ * That redundancy is deliberate. On a muted autoplaying clip the bar may be
+ * off-screen, and the silhouette still says how far along the kill is.
+ *
+ * ---- The budget --------------------------------------------------------
+ *
+ * A first draft modelled far more of the animal and never rendered a frame:
+ * linking succeeded, then the first `drawArrays` never returned. ANGLE
+ * compiles this to HLSL and hands it to fxc, and fxc will sit for minutes on
+ * a distance function that gets inlined into eight call sites with loops and
+ * nested branches inside each. The binding constraint on a shader like this
+ * is the *compiler*, not the GPU, and the only reliable lever is total
+ * inlined instruction count.
+ *
+ * So: no loops in the distance function, everything hand-unrolled, the pose
+ * trigonometry hoisted into globals and solved once per pixel instead of once
+ * per sample, ambient occlusion dropped for a hemisphere term that costs one
+ * multiply, and the exact round-cone distance replaced by a corrected
+ * approximation (see `sdTaper`). Four bounding spheres keep the runtime cost
+ * down on top of that, and the resolution below is tuned from measured frame
+ * time, so a weak GPU gets a soft image rather than a stalled one.
+ *
+ * As built: eighteen tapered capsules, seven ellipsoids, three triangles,
+ * four bounding tests, five call sites.
  */
 
-const VERT = `
-attribute vec2 aPos;
-void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
-`;
-
-const FRAG = `
-precision highp float;
-
-uniform vec2  uRes;
-uniform float uTime;
-uniform float uHp;     // 1 full, 0 dead
-uniform float uHeads;
-uniform float uHit;    // 1 on the frame of a hit, decaying
-uniform float uDeath;  // 0..1 progress through the death sequence
-
-#define SEG 5
-
-float smin(float a, float b, float k){
-  float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
-  return mix(b, a, h) - k*h*(1.0-h);
-}
-
-float sdCapsule(vec3 p, vec3 a, vec3 b, float r){
-  vec3 pa = p-a, ba = b-a;
-  float h = clamp(dot(pa,ba)/dot(ba,ba), 0.0, 1.0);
-  return length(pa - ba*h) - r;
-}
-
-float sdEllipsoid(vec3 p, vec3 r){
-  float k0 = length(p/r);
-  float k1 = length(p/(r*r));
-  return k0*(k0-1.0)/k1;
-}
-
-/*
- * Folds every angular sector onto the +x wedge and hands back the sector
- * index, which is what lets one neck stand in for all of them while still
- * animating differently per head.
- */
-float polarFold(inout vec3 p, float rep){
-  float angle = 6.2831853/rep;
-  float a = atan(p.z, p.x) + 3.14159265;
-  float sector = floor(a/angle);
-  float local = mod(a, angle) - angle*0.5;
-  float r = length(p.xz);
-  p.x = cos(local)*r;
-  p.z = sin(local)*r;
-  return sector;
-}
-
-/* A point along one neck. t runs 0 (shoulder) to 1 (head). */
-vec3 neckPoint(float t, float phase, float life){
-  float droop = 1.0 - life;
-  float x = 0.50 + 1.45*sin(t*1.20);
-  float y = 1.05 + 2.05*t - droop*(2.55*t*t);
-  float sway  = sin(uTime*1.25 + phase + t*2.8)*life;
-  float sway2 = cos(uTime*0.85 + phase*1.7 + t*2.0)*life;
-  x += sway2*0.15*t;
-  return vec3(x, y, sway*0.20*t);
-}
-
-float mapBody(vec3 p){
-  float sink = smoothstep(0.04, 0.46, uDeath) * (1.0 - smoothstep(0.64, 0.99, uDeath));
-  vec3 q = p;
-  q.y += sink*2.9;
-
-  float core = sdEllipsoid(q - vec3(0.0, 0.95, 0.0), vec3(1.06, 0.88, 1.06));
-  core -= 0.028*sin(uTime*1.15);
-
-  vec3 fp = q;
-  float idx = polarFold(fp, uHeads);
-  float phase = idx*2.3999;
-  float life = clamp(uHp*uHeads - idx, 0.0, 1.0);
-
-  float d = 1e9;
-  for(int i=0;i<SEG;i++){
-    float t0 = float(i)/float(SEG);
-    float t1 = float(i+1)/float(SEG);
-    float r = mix(0.30, 0.115, t0) * mix(0.60, 1.0, life);
-    d = min(d, sdCapsule(fp, neckPoint(t0, phase, life), neckPoint(t1, phase, life), r));
-  }
-
-  vec3 tip = neckPoint(1.0, phase, life);
-  float sc = mix(0.55, 1.0, life);
-  float head  = sdEllipsoid(fp - tip, vec3(0.30, 0.21, 0.23)*sc);
-  float snout = sdEllipsoid(fp - tip - vec3(0.26, -0.05, 0.0)*sc, vec3(0.20, 0.11, 0.11)*sc);
-  head = smin(head, snout, 0.07);
-
-  float body = smin(core, d, 0.30);
-  body = smin(body, head, 0.09);
-
-  // The hit ripple travels through the flesh rather than over it.
-  body -= uHit*0.055*sin(length(q)*8.5 - uTime*15.0);
-  return body;
-}
-
-vec3 normalAt(vec3 p){
-  vec2 e = vec2(0.0016, 0.0);
-  return normalize(vec3(
-    mapBody(p+e.xyy) - mapBody(p-e.xyy),
-    mapBody(p+e.yxy) - mapBody(p-e.yxy),
-    mapBody(p+e.yyx) - mapBody(p-e.yyx)
-  ));
-}
-
-float ao(vec3 p, vec3 n){
-  float occ = 0.0, sca = 1.0;
-  for(int i=0;i<5;i++){
-    float h = 0.02 + 0.13*float(i);
-    occ += (h - mapBody(p + n*h))*sca;
-    sca *= 0.72;
-  }
-  return clamp(1.0 - 1.5*occ, 0.0, 1.0);
-}
-
-void main(){
-  vec2 uv = (gl_FragCoord.xy - 0.5*uRes)/uRes.y;
-
-  float ang = uTime*0.055;
-  vec3 ro = vec3(sin(ang)*7.4, 2.75, cos(ang)*7.4);
-  vec3 ta = vec3(0.0, 1.62, 0.0);
-  vec3 ww = normalize(ta - ro);
-  vec3 uu = normalize(cross(ww, vec3(0.0,1.0,0.0)));
-  vec3 vv = cross(uu, ww);
-  vec3 rd = normalize(uv.x*uu + uv.y*vv + 1.65*ww);
-
-  // Health drives hue everywhere: teal while it is strong, arterial as it goes.
-  float wound = 1.0 - uHp;
-  vec3 vital = mix(vec3(0.16, 0.92, 0.62), vec3(1.0, 0.20, 0.34), wound);
-
-  /* Background: a lit haze above the stage, black everywhere else. */
-  vec3 col = mix(vec3(0.012,0.020,0.030), vec3(0.045,0.070,0.098),
-                 smoothstep(-0.45, 0.75, uv.y));
-  col += vital*0.055*exp(-length(uv - vec2(0.0, 0.16))*2.6);
-
-  /* Ground, intersected analytically — cheaper and flatter than marching it. */
-  float tp = rd.y < -0.0001 ? (-0.02 - ro.y)/rd.y : -1.0;
-
-  /* Body. */
-  float t = 0.6, hit = 0.0, glow = 0.0;
-  for(int i=0;i<108;i++){
-    vec3 p = ro + rd*t;
-    float h = mapBody(p);
-    glow += exp(-abs(h)*3.2)*0.011;
-    if(h < 0.0018*t){ hit = 1.0; break; }
-    t += h*0.78;
-    if(t > 22.0) break;
-  }
-
-  if(tp > 0.0 && (hit < 0.5 || tp < t)){
-    vec3 pw = ro + rd*tp;
-    float r = length(pw.xz);
-    // Pooled light under the beast, plus the arena's concentric scoring.
-    float pool = exp(-r*0.42)*0.5;
-    float rings = smoothstep(0.86, 1.0, abs(sin(r*2.1)))*0.045*exp(-r*0.22);
-    // A hit throws a ring out across the floor. This is the shot that reads
-    // in a clip even when the creature is off-frame.
-    float wave = uHit*exp(-abs(r - (1.0 - uHit)*11.0)*1.7);
-    vec3 g = vec3(0.02,0.030,0.042)*exp(-r*0.16);
-    g += vital*(pool*0.55 + wave*0.85) + vec3(0.30,0.45,0.55)*rings;
-    col = mix(col, g, exp(-r*0.055));
-  }
-
-  if(hit > 0.5){
-    vec3 p = ro + rd*t;
-    vec3 n = normalAt(p);
-    float occ = ao(p, n);
-
-    vec3 key = normalize(vec3(0.35, 0.92, 0.30));
-    float kd = clamp(dot(n, key), 0.0, 1.0);
-    float back = clamp(dot(n, normalize(vec3(-0.5, 0.25, -0.8))), 0.0, 1.0);
-    float fres = pow(1.0 - clamp(dot(n, -rd), 0.0, 1.0), 3.2);
-
-    // Hide the sector seams in the scale pattern rather than pretending the
-    // folded field is continuous.
-    float scales = 0.5 + 0.5*sin(p.y*26.0 + sin(p.x*17.0)*1.6 + sin(p.z*15.0)*1.2);
-    vec3 skin = mix(vec3(0.018,0.042,0.038), vec3(0.055,0.105,0.095), scales);
-
-    vec3 c = skin*(0.16 + 0.95*kd)*occ;
-    c += vec3(0.10,0.20,0.26)*back*0.5*occ;
-    c += mix(vec3(0.35,0.80,0.70), vital, 0.55)*fres*0.85;
-
-    // Veins. Tight bands of light between the plates, brighter as it weakens.
-    float vein = pow(abs(sin(p.y*3.6 + p.x*1.8 + uTime*0.55)), 20.0);
-    c += vital*vein*(0.35 + 1.5*wound)*occ;
-    c += vital*uHit*(0.55 + fres*2.2);
-
-    col = mix(col, c, 1.0);
-  }
-
-  col += vital*glow*(0.5 + 0.9*wound + uHit*2.2);
-
-  // Death: a white burst on the frame it dies, decaying as the corpse sinks.
-  col += vec3(1.0, 0.92, 0.80)*exp(-uDeath*7.0)*step(0.0001, uDeath)*1.6;
-
-  col = col/(1.0 + col);
-  col = pow(clamp(col, 0.0, 1.0), vec3(0.4545));
-  // Vignette, so the stage falls off into the page rather than ending at it.
-  col *= 1.0 - 0.42*pow(length(uv*vec2(0.62, 0.92)), 2.4);
-  gl_FragColor = vec4(col, 1.0);
-}
-`;
 
 function compile(
   gl: WebGLRenderingContext,
@@ -245,6 +67,19 @@ function compile(
   }
   return shader;
 }
+
+/*
+ * Pixels marched before the first frame-time measurement comes back.
+ *
+ * Deliberately small. The cost of one frame here spans two orders of
+ * magnitude across the machines this will run on, and the failure mode of
+ * guessing high is not a dropped frame — it is a compositor that stops
+ * answering for several seconds on the very first paint. Guessing low costs a
+ * soft second and a half while the loop below walks it up.
+ */
+const FIRST_FRAME_PIXELS = 260_000;
+const MIN_PIXELS = 18_000;
+const MAX_PIXELS = 1_100_000;
 
 export const BossCanvas = memo(function BossCanvas({
   visuals,
@@ -268,8 +103,8 @@ export const BossCanvas = memo(function BossCanvas({
       return;
     }
 
-    const vert = compile(gl, gl.VERTEX_SHADER, VERT);
-    const frag = compile(gl, gl.FRAGMENT_SHADER, FRAG);
+    const vert = compile(gl, gl.VERTEX_SHADER, DRAGON_VERT);
+    const frag = compile(gl, gl.FRAGMENT_SHADER, DRAGON_FRAG);
     if (!vert || !frag) {
       setFailed(true);
       return;
@@ -279,13 +114,43 @@ export const BossCanvas = memo(function BossCanvas({
     gl.attachShader(program, vert);
     gl.attachShader(program, frag);
     gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.error(gl.getProgramInfoLog(program));
-      setFailed(true);
-      return;
-    }
-    gl.useProgram(program);
 
+    /*
+     * Do not ask whether the link succeeded yet.
+     *
+     * ANGLE translates this to HLSL and hands it to fxc, which takes about two
+     * seconds on it — and `getProgramParameter(LINK_STATUS)` blocks until that
+     * finishes, on the main thread, while the rest of the page is trying to be
+     * interactive. `KHR_parallel_shader_compile` exists precisely so the
+     * question can be asked without blocking: poll COMPLETION_STATUS_KHR, and
+     * only read LINK_STATUS once the driver says it is done.
+     *
+     * Where the extension is missing this falls back to the blocking read, so
+     * the behaviour is no worse than not trying.
+     */
+    const parallel = gl.getExtension("KHR_parallel_shader_compile");
+    let cancelled = false;
+    let poll = 0;
+
+    const whenLinked = (then: () => void) => {
+      if (cancelled) return;
+      if (
+        parallel &&
+        !gl.getProgramParameter(program, parallel.COMPLETION_STATUS_KHR)
+      ) {
+        poll = window.setTimeout(() => whenLinked(then), 24);
+        return;
+      }
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(program));
+        setFailed(true);
+        return;
+      }
+      then();
+    };
+
+    const start = (): (() => void) => {
+    gl.useProgram(program);
     const buffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(
@@ -300,7 +165,7 @@ export const BossCanvas = memo(function BossCanvas({
     const uRes = gl.getUniformLocation(program, "uRes");
     const uTime = gl.getUniformLocation(program, "uTime");
     const uHp = gl.getUniformLocation(program, "uHp");
-    const uHeads = gl.getUniformLocation(program, "uHeads");
+    const uTier = gl.getUniformLocation(program, "uTier");
     const uHit = gl.getUniformLocation(program, "uHit");
     const uDeath = gl.getUniformLocation(program, "uDeath");
 
@@ -309,22 +174,32 @@ export const BossCanvas = memo(function BossCanvas({
     ).matches;
 
     /*
-     * Quality is chosen from measured frame time rather than from a device
-     * string. The shader is the only expensive thing on the page, so if it
-     * cannot hold 60fps the honest move is to march fewer pixels — the model
-     * is unchanged, it is just softer.
+     * Resolution is measured, not guessed. The first frame is deliberately
+     * small — a laptop that cannot afford this shader must not discover that
+     * by locking its own compositor — and from there the loop walks the pixel
+     * count toward whatever holds sixty, in both directions.
      */
-    let scale = reduced ? 0.7 : 1.0;
-    let frames = 0;
-    let sampleStart = 0;
+    let budget = FIRST_FRAME_PIXELS;
+    /* Frame intervals, in ms, for the resolution controller below. */
+    const deltas: number[] = [];
 
     const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5) * scale;
-      const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
-      const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
-      if (canvas.width === width && canvas.height === height) return;
-      canvas.width = width;
-      canvas.height = height;
+      const cssW = Math.max(1, canvas.clientWidth);
+      const cssH = Math.max(1, canvas.clientHeight);
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const scale = Math.sqrt(Math.min(1, budget / (cssW * cssH * dpr * dpr)));
+      const width = Math.max(1, Math.round(cssW * dpr * scale));
+      const height = Math.max(1, Math.round(cssH * dpr * scale));
+      // Only reallocate when the size actually moved — assigning width or
+      // height reallocates and clears the drawing buffer even if the value is
+      // unchanged. The viewport and the uniform, though, are set every time:
+      // uniforms belong to the program, not the context, so a remount that
+      // reuses a same-sized canvas would otherwise leave the new program's
+      // uRes at (0, 0) and every pixel would divide by zero.
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
       gl.viewport(0, 0, width, height);
       gl.uniform2f(uRes, width, height);
     };
@@ -334,9 +209,9 @@ export const BossCanvas = memo(function BossCanvas({
     observer.observe(canvas);
 
     // Smoothed copies of the shared state. The provider writes step changes;
-    // these ease them so the creature never snaps between two poses.
+    // these ease them so the dragon never snaps between two poses.
     let hp = visuals.current.hp;
-    let heads = visuals.current.heads;
+    let tier = visuals.current.tier;
     let pulse = 0;
     let lastHitSeq = visuals.current.hitSeq;
     let deathStart = -1;
@@ -344,6 +219,7 @@ export const BossCanvas = memo(function BossCanvas({
 
     let raf = 0;
     let last = performance.now();
+    let previous = last;
     const start = last;
 
     const frame = (now: number) => {
@@ -360,9 +236,9 @@ export const BossCanvas = memo(function BossCanvas({
         deathStart = now;
       }
 
-      pulse = Math.max(0, pulse - dt * 2.6);
+      pulse = Math.max(0, pulse - dt * 2.4);
       hp += (box.hp - hp) * Math.min(1, dt * 7);
-      heads += (box.heads - heads) * Math.min(1, dt * 3);
+      tier += (box.tier - tier) * Math.min(1, dt * 2);
 
       let death = 0;
       if (deathStart >= 0) {
@@ -375,35 +251,88 @@ export const BossCanvas = memo(function BossCanvas({
 
       gl.uniform1f(uTime, reduced ? 12 : (now - start) / 1000);
       gl.uniform1f(uHp, hp);
-      gl.uniform1f(uHeads, Math.max(3, heads));
+      gl.uniform1f(uTier, tier);
       gl.uniform1f(uHit, pulse * pulse);
       gl.uniform1f(uDeath, death);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-      // Sample once a second and step the resolution down if we are missing.
-      frames += 1;
-      if (sampleStart === 0) sampleStart = now;
-      if (now - sampleStart > 1000) {
-        const fps = (frames * 1000) / (now - sampleStart);
-        if (fps < 34 && scale > 0.5) {
-          scale = Math.max(0.5, scale - 0.2);
-          resize();
+      /*
+       * ---- Resolution ---------------------------------------------------
+       *
+       * Cost is measured as the *median interval between frames*, not as a
+       * count of frames over a window, and intervals longer than a fifth of a
+       * second are thrown away before the median is taken.
+       *
+       * That distinction is the whole controller. Counting frames over wall
+       * time cannot tell a slow GPU from a throttled one: a backgrounded tab
+       * or an occluded window keeps the clock running while rAF stops, the
+       * window reads as two frames per second, and the render collapses to a
+       * hundred and sixty pixels wide and stays there until the page is
+       * reloaded. Intervals do tell them apart — a slow GPU produces long but
+       * *regular* gaps, throttling produces a handful of enormous ones — and
+       * a median ignores the one-off hitch that a mean would chase.
+       */
+      const gap = now - previous;
+      previous = now;
+      if (gap > 4 && gap < 200) deltas.push(gap);
+
+      if (deltas.length >= 14) {
+        deltas.sort((a, b) => a - b);
+        const fps = 1000 / deltas[deltas.length >> 1];
+        deltas.length = 0;
+        const before = budget;
+        /*
+         * The target is thirty, not sixty. This is a boss standing in place
+         * breathing; nothing in the model moves fast enough for the extra
+         * frames to read, and dropping the target buys four times the pixels,
+         * which is the difference between a sharp dragon and a blurry one.
+         *
+         * Corrections scale toward the target rather than stepping by a fixed
+         * factor, so a machine running at four frames a second comes down an
+         * order of magnitude at once instead of over several seconds.
+         */
+        if (fps < 26) {
+          budget = Math.max(MIN_PIXELS, budget * Math.max(0.2, fps / 30));
+        } else if (fps > 40) {
+          budget = Math.min(MAX_PIXELS, budget * 1.5);
         }
-        frames = 0;
-        sampleStart = now;
+        if (budget !== before) resize();
       }
 
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
 
+    // Coming back from a hidden tab throws away whatever partial sample was
+    // collected on the way out, and re-bases the clock so the first frame
+    // back is not treated as one enormous interval.
+    const onVisible = () => {
+      deltas.length = 0;
+      last = performance.now();
+      previous = last;
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     return () => {
       cancelAnimationFrame(raf);
       observer.disconnect();
+      document.removeEventListener("visibilitychange", onVisible);
+      gl.deleteBuffer(buffer);
+    };
+    };
+
+    let teardown = () => {};
+    whenLinked(() => {
+      teardown = start();
+    });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(poll);
+      teardown();
       gl.deleteProgram(program);
       gl.deleteShader(vert);
       gl.deleteShader(frag);
-      gl.deleteBuffer(buffer);
     };
   }, [visuals]);
 
@@ -414,10 +343,10 @@ export const BossCanvas = memo(function BossCanvas({
       <div className="absolute inset-0 flex items-center justify-center">
         <div
           aria-hidden
-          className="h-64 w-64 rounded-full opacity-70 blur-2xl"
+          className="h-72 w-72 rounded-full opacity-70 blur-3xl"
           style={{
             background:
-              "radial-gradient(circle, rgba(53,224,176,0.55), rgba(255,58,94,0.18) 55%, transparent 72%)",
+              "radial-gradient(circle, rgba(255,120,40,0.55), rgba(255,58,94,0.20) 55%, transparent 72%)",
           }}
         />
       </div>

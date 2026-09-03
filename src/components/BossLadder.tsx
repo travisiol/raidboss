@@ -37,7 +37,7 @@ export function BossLadder() {
         <SectionHead
           index="Ladder"
           title="It only gets bigger"
-          lede={`Every kill raises the next boss by ${raidRules.growth}× and adds a head. The pot rises with it, because the pot is a fixed share of the health — a bigger boss is a bigger pot by construction, not by promise.`}
+          lede={`Every kill raises the next boss by ${raidRules.growth}× and adds a pair of horns. The pot rises with it, because the pot is a fixed share of the health — a bigger boss is a bigger pot by construction, not by promise.`}
         />
 
         <div className="mt-12 grid gap-6 lg:grid-cols-[1.35fr_1fr]">
@@ -62,7 +62,7 @@ export function BossLadder() {
                   <div
                     key={rung.id}
                     className="group flex flex-1 flex-col items-center justify-end gap-2"
-                    title={`Hydra ${roman(rung.id)} — ${full(rung.health)} health, ${usdg(rung.pot)} USDG pot`}
+                    title={`Boss ${roman(rung.id)} — ${full(rung.health)} health, ${usdg(rung.pot)} USDG pot`}
                   >
                     <span
                       className={clsx(

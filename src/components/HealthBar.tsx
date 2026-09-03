@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
 import { useRaid } from "@/lib/raidState";
 import { full, short } from "@/lib/format";
+import { rankForBoss } from "@/lib/site-config";
 
 const ROMAN: [number, string][] = [
   [1000, "M"],
@@ -76,10 +77,10 @@ export function HealthBar() {
       <div className="flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
           <h1 className="type-title text-bone">
-            Hydra <span className="text-blood">{roman(boss.id)}</span>
+            Boss <span className="text-blood">{roman(boss.id)}</span>
           </h1>
           <span className="type-label text-bone-muted">
-            {boss.heads} heads
+            {rankForBoss(boss.id)}
           </span>
         </div>
 

@@ -1,7 +1,7 @@
 /**
  * The raid, when there is no contract to read it from.
  *
- * With `NEXT_PUBLIC_HYDRA_CONTRACT_ADDRESS` unset the site still has to show
+ * With `NEXT_PUBLIC_RAID_CONTRACT_ADDRESS` unset the site still has to show
  * a boss taking damage, because a health bar that never moves communicates
  * nothing about a product whose entire idea is a health bar that moves. So
  * this file runs the same rules locally and the UI labels it SIMULATION
@@ -82,9 +82,16 @@ export type Boss = {
   maxHealth: number;
   health: number;
   pot: number;
-  heads: number;
   /** Milliseconds relative to mount. Negative for a boss already standing. */
   spawnedAt: number;
+};
+
+/** One wallet's line on a dead boss: what it did, and what it is owed. */
+export type Split = {
+  wallet: string;
+  damage: number;
+  share: number;
+  owed: number;
 };
 
 export type Kill = {
@@ -98,7 +105,21 @@ export type Kill = {
   durationMs: number;
   /** What the connected wallet took from this corpse, if anything. */
   yourShare: number;
+  /**
+   * The full division, largest first.
+   *
+   * Kept on the kill rather than recomputed later because it is the one number
+   * on this site that somebody has to act on with their own money: while there
+   * is no contract paying out, a person reads this table and sends the
+   * transfers. Recomputing it from a leaderboard that has since moved on would
+   * quietly pay the wrong wallets.
+   */
+  splits: Split[];
 };
+
+/** How many lines a kill keeps. Beyond this the tail is dust, and unbounded
+ *  history in a client-side fold is a memory leak with extra steps. */
+export const SPLIT_LIMIT = 250;
 
 export type RaidSnapshot = {
   boss: Boss;
@@ -129,7 +150,6 @@ export function makeBoss(id: number, seededPot: number, at: number): Boss {
     maxHealth,
     health: maxHealth,
     pot: seededPot,
-    heads: Math.min(raidRules.baseHeads + (id - 1), 9),
     spawnedAt: at,
   };
 }
@@ -184,6 +204,16 @@ export function applyHit(
   const yourDamage = damageMap[YOU] ?? 0;
   const yourShare = total > 0 ? (payout * yourDamage) / total : 0;
 
+  const splits: Split[] = Object.entries(damageMap)
+    .map(([holder, dealt]) => ({
+      wallet: holder,
+      damage: dealt,
+      share: total > 0 ? dealt / total : 0,
+      owed: total > 0 ? (payout * dealt) / total : 0,
+    }))
+    .sort((a, b) => b.owed - a.owed)
+    .slice(0, SPLIT_LIMIT);
+
   const kill: Kill = {
     bossId: boss.id,
     maxHealth: boss.maxHealth,
@@ -193,6 +223,7 @@ export function applyHit(
     killedAt: at,
     durationMs: at - boss.spawnedAt,
     yourShare,
+    splits,
   };
 
   return {
@@ -205,6 +236,20 @@ export function applyHit(
       totalPaidOut: next.totalPaidOut + payout,
     },
     killed: kill,
+  };
+}
+
+/** An untouched raid: boss I at full health, nobody in, nothing in the pot. */
+export function emptyRaid(): RaidSnapshot {
+  return {
+    boss: makeBoss(1, 0, 0),
+    hits: [],
+    damage: {},
+    kills: [],
+    yourWallet: YOU,
+    yourPending: 0,
+    totalDamageDealt: 0,
+    totalPaidOut: 0,
   };
 }
 

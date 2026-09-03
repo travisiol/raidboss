@@ -3,6 +3,7 @@ import { Pitch } from "@/components/Pitch";
 import { BoardRow } from "@/components/BoardRow";
 import { HowItWorks } from "@/components/HowItWorks";
 import { BossLadder } from "@/components/BossLadder";
+import { PayoutLedger } from "@/components/PayoutLedger";
 import { Faq } from "@/components/Faq";
 import { Footer } from "@/components/Footer";
 
@@ -20,6 +21,7 @@ export default function Page() {
       <BoardRow />
       <HowItWorks />
       <BossLadder />
+      <PayoutLedger />
       <Faq />
       <Footer />
     </>

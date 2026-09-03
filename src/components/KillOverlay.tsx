@@ -91,7 +91,7 @@ export function KillOverlay() {
             transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
           >
             <p className="type-label text-blood">
-              Hydra {roman(killFlash.bossId)} · down in{" "}
+              Boss {roman(killFlash.bossId)} · down in{" "}
               {duration(killFlash.durationMs)}
             </p>
 
@@ -142,7 +142,7 @@ export function KillOverlay() {
               animate={{ opacity: 1 }}
               transition={{ delay: 1.4, duration: 0.6 }}
             >
-              Hydra{" "}
+              Boss{" "}
               <span className="text-blood">{roman(killFlash.bossId + 1)}</span>{" "}
               rising ·{" "}
               <span className="text-bone">

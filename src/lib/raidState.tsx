@@ -13,10 +13,18 @@ import {
   type RefObject,
 } from "react";
 import { useAccount, useReadContracts, useWatchContractEvent } from "wagmi";
-import { chainConfig, isLive, raidRules } from "@/lib/site-config";
-import { fromUsdg, hydraAbi } from "@/lib/hydraAbi";
+import {
+  chainConfig,
+  isLive,
+  raidMode,
+  raidRules,
+  tierForBoss,
+} from "@/lib/site-config";
+import { fromUsdg, raidAbi } from "@/lib/raidAbi";
+import { usePoolBuys } from "@/lib/poolRaid";
 import {
   applyHit,
+  emptyRaid,
   makeAddress,
   mulberry32,
   rollBuy,
@@ -39,7 +47,8 @@ import {
 export type Visuals = {
   /** 1 at full health, 0 at death. */
   hp: number;
-  heads: number;
+  /** 0 for the first boss, 1 for the oldest. Sizes the crown. */
+  tier: number;
   /** Bumped on every landed hit so the loop can kick without polling. */
   hitSeq: number;
   /** Non-zero while the death sequence is playing. */
@@ -65,6 +74,12 @@ type RaidContextValue = {
   mounted: boolean;
   /** True when a real contract is configured and being read. */
   live: boolean;
+  /** Which source the numbers come from. */
+  mode: typeof raidMode;
+  /** True while POOL mode is still walking back through chain history. */
+  syncing: boolean;
+  /** Set when a chain read failed outright, so the UI can say so. */
+  chainError: string | null;
   /** The most recent kill, held for the death overlay, then cleared. */
   killFlash: Kill | null;
   pops: Pop[];
@@ -120,7 +135,7 @@ export function RaidProvider({ children }: { children: ReactNode }) {
 
   const visuals = useRef<Visuals>({
     hp: SEED.boss.health / SEED.boss.maxHealth,
-    heads: SEED.boss.heads,
+    tier: tierForBoss(SEED.boss.id),
     hitSeq: 0,
     death: 0,
     deathSeq: 0,
@@ -154,7 +169,7 @@ export function RaidProvider({ children }: { children: ReactNode }) {
       const box = visuals.current;
       const hit = result.next.hits[0];
       box.hp = result.next.boss.health / result.next.boss.maxHealth;
-      box.heads = result.next.boss.heads;
+      box.tier = tierForBoss(result.next.boss.id);
       box.hitSeq += 1;
 
       if (hit) {
@@ -184,10 +199,10 @@ export function RaidProvider({ children }: { children: ReactNode }) {
         // The corpse sinks through the first two thirds of the sequence and
         // the next boss rises through the last third, so health has to be back
         // up before the shader stops sinking — otherwise a fresh boss surfaces
-        // with its heads already dead.
+        // with a drained bar and a collapsed pose.
         window.setTimeout(() => {
           box.hp = 1;
-          box.heads = stateRef.current.boss.heads;
+          box.tier = tierForBoss(stateRef.current.boss.id);
         }, DEATH_MS * 0.6);
         window.setTimeout(() => {
           box.death = 0;
@@ -201,7 +216,7 @@ export function RaidProvider({ children }: { children: ReactNode }) {
   /* ---- The simulation -------------------------------------------------- */
 
   useEffect(() => {
-    if (isLive) return;
+    if (raidMode !== "sim") return;
     // Seeded from the clock so two tabs do not run the same "random" raid,
     // but only after mount — the first frame is always the shared seed.
     const rand = mulberry32((Date.now() ^ 0x9e3779b9) >>> 0);
@@ -246,12 +261,12 @@ export function RaidProvider({ children }: { children: ReactNode }) {
       ? [
           {
             address: chainConfig.contractAddress!,
-            abi: hydraAbi,
+            abi: raidAbi,
             functionName: "currentBoss",
           },
           {
             address: chainConfig.contractAddress!,
-            abi: hydraAbi,
+            abi: raidAbi,
             functionName: "leaderboard",
             args: [20n],
           },
@@ -275,7 +290,6 @@ export function RaidProvider({ children }: { children: ReactNode }) {
       maxHealth: fromUsdg(raw.maxHealth),
       health: fromUsdg(raw.health),
       pot: fromUsdg(raw.pot),
-      heads: Math.min(raidRules.baseHeads + (raw.id - 1), 9),
       spawnedAt: Number(raw.spawnedAt) * 1000 - mountEpoch,
     };
   }, [chainReads.data, mountEpoch]);
@@ -299,12 +313,12 @@ export function RaidProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!chainBoss) return;
     visuals.current.hp = chainBoss.health / Math.max(1, chainBoss.maxHealth);
-    visuals.current.heads = chainBoss.heads;
+    visuals.current.tier = tierForBoss(chainBoss.id);
   }, [chainBoss]);
 
   useWatchContractEvent({
     address: chainConfig.contractAddress ?? undefined,
-    abi: hydraAbi,
+    abi: raidAbi,
     eventName: "Hit",
     enabled: isLive,
     onLogs: (logs) => {
@@ -321,7 +335,8 @@ export function RaidProvider({ children }: { children: ReactNode }) {
   const strike = useCallback(
     (amountUsdg: number) => {
       if (!Number.isFinite(amountUsdg) || amountUsdg <= 0) return;
-      // Live mode routes through the contract in `StrikePanel`; this path is
+      // On a live chain the hit is a real buy, landed by the chain watcher
+      // when it confirms — `StrikePanel` routes the user to it. This path is
       // the simulated hit, and is labelled as such wherever it is offered.
       if (isLive) return;
       land(YOU, amountUsdg);
@@ -329,13 +344,50 @@ export function RaidProvider({ children }: { children: ReactNode }) {
     [land],
   );
 
+  /*
+   * POOL mode. Every buy the chain has seen since `startBlock` is replayed
+   * through `applyHit`, in order, from boss I — so the health bar, the pot,
+   * the board and the graveyard are all derived, and none of them can drift
+   * from the others or from the rules as written. Re-folding the whole history
+   * on each new buy is O(n) on a list that grows by one every few seconds,
+   * which is cheaper than any bookkeeping that could get it wrong.
+   */
+  const pool = usePoolBuys();
+  const poolSnapshot = useMemo<RaidSnapshot | null>(() => {
+    if (raidMode !== "pool") return null;
+    let folded = emptyRaid();
+    for (const buy of pool.buys) {
+      folded = applyHit(folded, buy.wallet, buy.amount, buy.at - mountEpoch)
+        .next;
+    }
+    return folded;
+  }, [pool.buys, mountEpoch]);
+
   const snapshot = useMemo<RaidSnapshot>(
     () =>
-      chainBoss
+      poolSnapshot ??
+      (chainBoss
         ? { ...state, boss: chainBoss, damage: chainDamage ?? state.damage }
-        : state,
-    [state, chainBoss, chainDamage],
+        : state),
+    [poolSnapshot, state, chainBoss, chainDamage],
   );
+
+  // Keep the canvas in step with whichever source is authoritative, and fire
+  // the kill sequence when a replay crosses a boss boundary.
+  const lastPoolBoss = useRef(0);
+  useEffect(() => {
+    if (!poolSnapshot) return;
+    const box = visuals.current;
+    box.hp = poolSnapshot.boss.health / poolSnapshot.boss.maxHealth;
+    box.tier = tierForBoss(poolSnapshot.boss.id);
+    box.hitSeq += 1;
+    if (lastPoolBoss.current && poolSnapshot.boss.id > lastPoolBoss.current) {
+      box.deathSeq += 1;
+      setKillFlash(poolSnapshot.kills[0] ?? null);
+      window.setTimeout(() => setKillFlash(null), DEATH_MS + 2400);
+    }
+    lastPoolBoss.current = poolSnapshot.boss.id;
+  }, [poolSnapshot]);
 
   const value = useMemo<RaidContextValue>(
     () => ({
@@ -343,6 +395,9 @@ export function RaidProvider({ children }: { children: ReactNode }) {
       elapsed,
       mounted,
       live: isLive,
+      mode: raidMode,
+      syncing: raidMode === "pool" && pool.status === "loading",
+      chainError: pool.error,
       killFlash,
       pops,
       hitSeq,
@@ -350,7 +405,18 @@ export function RaidProvider({ children }: { children: ReactNode }) {
       strike,
       address,
     }),
-    [snapshot, elapsed, mounted, killFlash, pops, hitSeq, strike, address],
+    [
+      snapshot,
+      elapsed,
+      mounted,
+      pool.status,
+      pool.error,
+      killFlash,
+      pops,
+      hitSeq,
+      strike,
+      address,
+    ],
   );
 
   return <RaidContext.Provider value={value}>{children}</RaidContext.Provider>;

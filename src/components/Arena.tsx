@@ -90,8 +90,15 @@ export function Arena() {
         {/* ---- Pot, stats, strike ---------------------------------------- */}
         <div className="mx-auto grid w-full max-w-[1400px] gap-3 px-4 pb-6 sm:px-6 lg:grid-cols-[1fr_360px] lg:items-end">
           <div className="slab p-4 sm:p-5">
-            <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 xl:grid-cols-5">
-              <Stat label="Pot on the table" hint="USDG, paid on the kill">
+            {/* Six columns, and the pot takes two of them: it is the only
+                figure here set at poster size, so it is the only one that
+                needs a cell wide enough to hold nine glyphs of Anton. */}
+            <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 xl:grid-cols-6">
+              <Stat
+                label="Pot on the table"
+                hint="USDG, paid on the kill"
+                className="col-span-2 xl:col-span-2"
+              >
                 <Rolling
                   value={boss.pot}
                   format={usdg}
